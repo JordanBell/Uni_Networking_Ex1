@@ -1,4 +1,5 @@
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <stdio.h>
@@ -11,13 +12,55 @@
 #include <signal.h>
 #include "linkedlist.h"
 
-//#define DEBUG
+#define DEBUG
 
-pthread_mutex_t g_log_lock;
-char* g_s_arg_filename_output = 0;
+pthread_mutex_t g_mutex;
 int g_i_message_counter = 0;
 int g_socket_fd;	// Descriptor for the client's connection, established upon accept()
 list g_all_connections;
+
+// buf needs to store 30 characters
+int timespec_tostr(char *buf, uint len, struct timespec *ts)
+{
+    int ret;
+    struct tm t;
+
+    tzset();
+    if (localtime_r(&(ts->tv_sec), &t) == NULL)
+        return 1;
+
+    ret = strftime(buf, len, "%F %T", &t);
+    if (ret == 0)
+        return 2;
+    len -= ret - 1;
+
+    ret = snprintf(&buf[strlen(buf)], len, ".%09ld", ts->tv_nsec);
+    if (ret >= len)
+        return 3;
+
+    return 0;
+}
+
+void split_tochar(char** head, char** src, char c)
+{
+	*head = *src;
+	char* p_char_at = strchr(*src, c);
+
+	if(p_char_at != NULL)
+	{
+		*p_char_at = '\0';
+		*src = p_char_at + 1;
+	}
+	else
+	{
+		*src = NULL;
+	}
+}
+
+void qsend(int fd, char* message)
+{
+	send(fd, message, strlen(message), 0);
+}
 
 void* handle_connection(void* p_context)
 {
@@ -45,36 +88,147 @@ void* handle_connection(void* p_context)
 			p_conn_data->m_received_message[message_len-1] = '\0';
 		}
 
-		// Echo the received message
-#ifdef DEBUG
-		printf("%d %s\n", g_i_message_counter, p_conn_data->m_received_message);
-#endif
+		// Parse the request
+		char* word1;
+		char* word2;
+		char* word3;
 
-		// Write to file and inc the message counter (Critical section)
-		pthread_mutex_lock(&g_log_lock);
+		// Make a copy of the message for us to modify and point to
+		char* message = (char*)malloc(sizeof(char) * 256);
+		strncpy(message, p_conn_data->m_received_message, 256);
 
-		FILE* p_file_out_log = fopen(g_s_arg_filename_output, "a");
-		if(p_file_out_log == 0)
+		int i;
+		for(i = 0; message != 0 && i < 3; ++i)
 		{
-			perror("Failed to open log file.");
-		}
-		else
-		{
-			if(fprintf(p_file_out_log, "%d %s\n", g_i_message_counter, p_conn_data->m_received_message) <= 0)
+			switch(i)
 			{
-				perror("Failed to write to the log file.");
+				case 0:
+				{
+					// Copy words of the message into the buffers
+					split_tochar(&word1, &message, ' ');
+				}
+				break;
+				case 1:
+				{
+					// Copy words of the message into the buffers
+					split_tochar(&word2, &message, ' ');
+				}
+				break;
+				case 2:
+				{
+					// Copy words of the message into the buffers
+					split_tochar(&word3, &message, ' ');
+				}
+				break;
 			}
-
-			// Close the log file
-			fclose(p_file_out_log);
-			++g_i_message_counter;
-			p_file_out_log = 0;
 		}
-		pthread_mutex_unlock(&g_log_lock);
 
-		// Send an acknowledgment character to the client
-		char* ack = "a";
-		send(p_conn_data->m_client_fd, ack, sizeof(char), 0);
+		if(i < 3)
+		{
+			// Terminate if there were fewer than 3 words copied over
+			char* errmsg = "Invalid number of words\n";
+			send(p_conn_data->m_client_fd, errmsg, strlen(errmsg), 0);
+			continue;
+		}
+
+		if(strcmp(word1, "GET") != 0)
+		{
+			char* errmsg = "Not a get request\n";
+			send(p_conn_data->m_client_fd, errmsg, strlen(errmsg), 0);
+			continue;
+		}
+
+		if(strcmp(word3, "HTTP/1.1") != 0)
+		{
+			char* errmsg = "HTTP/1.1 400 Bad Request\n";
+			send(p_conn_data->m_client_fd, errmsg, strlen(errmsg), 0);
+			continue;
+		}
+
+		// Validate the url
+		if(word2[0] != '/')
+		{
+			char* errmsg = "Invalid filepath format. It must start with a \'/\' character.\n";
+			send(p_conn_data->m_client_fd, errmsg, strlen(errmsg), 0);
+			continue;
+		}
+
+		// Forbid access to parent folders
+		if(strstr(word2, "..") != 0)
+		{
+			// The user may be trying to access a parent folder
+			char* errmsg = "HTTP/1.1 403 Forbidden\n";
+			send(p_conn_data->m_client_fd, errmsg, strlen(errmsg), 0);
+			continue;
+		}
+
+		// Get the file at the requested URL
+		char* requested_filepath = (char*)malloc(sizeof(char) * 256);
+		strcpy(requested_filepath, "files");
+		strncat(requested_filepath, word2, 256);
+
+		// Lock mutex for accessing files
+		pthread_mutex_lock(&g_mutex);
+
+		struct stat file_stat;
+		int stat_result = stat(requested_filepath, &file_stat);
+
+		pthread_mutex_unlock(&g_mutex);
+
+		// Return 404 if the filepath has an error
+		if(stat_result == -1)
+		{
+			// File does not exist
+			char* errmsg = "HTTP/1.1 404 Not Found\n";
+			send(p_conn_data->m_client_fd, errmsg, strlen(errmsg), 0);
+			continue;
+		}
+
+		// TODO Lock mutex when accessing file!
+		FILE* p_file_requested = fopen(requested_filepath, "r");
+
+		if(p_file_requested == 0)
+		{
+			// File does not exist
+			char* errmsg = "HTTP/1.1 404 Not Found\n";
+			send(p_conn_data->m_client_fd, errmsg, strlen(errmsg), 0);
+			continue;
+		}
+
+		// Send the OK message
+		qsend(p_conn_data->m_client_fd, "HTTP/1.1 200 OK\n");
+
+		// Send headers
+		qsend(p_conn_data->m_client_fd, "Server: Localhost\n");
+		qsend(p_conn_data->m_client_fd, "Strict-Transport-Security: max-age=31536000\n");
+
+		// Get the date of modification
+		char modification_date_str[30];
+		timespec_tostr(modification_date_str, 30, &file_stat.st_mtim);
+		char header_modification[128];
+		sprintf(header_modification, "Last-Modified: %s\n", modification_date_str);
+		qsend(p_conn_data->m_client_fd, header_modification);
+
+		// Send file-type specific information
+		int is_text = 1;
+		if(is_text)
+		{
+			qsend(p_conn_data->m_client_fd, "Content-Type: text/html\n");
+
+			char header_length[128];
+			sprintf(header_length, "Content-Length: %jd\n", (intmax_t)file_stat.st_size);
+			qsend(p_conn_data->m_client_fd, header_length);
+
+			char* str_contents = (char*)malloc(file_stat.st_size);
+			pthread_mutex_lock(&g_mutex);
+			while(fgets(str_contents, file_stat.st_size, p_file_requested))
+			{
+				send(p_conn_data->m_client_fd, str_contents, file_stat.st_size, 0);
+				memset(str_contents, 0, file_stat.st_size);
+			}
+			pthread_mutex_unlock(&g_mutex);
+		}
+
 	}
 
 	return 0;
@@ -87,7 +241,7 @@ void signal_handler(int signal_id)
 	case SIGINT:
 	case SIGTERM:
 	case SIGKILL:
-		pthread_mutex_destroy(&g_log_lock);
+		pthread_mutex_destroy(&g_mutex);
 		list_destroy(&g_all_connections);
 		close(g_socket_fd);
 		exit(0);
@@ -120,17 +274,10 @@ int init_server(char *argv[])
 {
 	// Get the arguments, port number and output filepath
 	char* s_arg_port_no = argv[1];
-	g_s_arg_filename_output = argv[2];
 	int i_port_no = atoi(s_arg_port_no); // Convert the port number string into an int
 	struct sockaddr_in server;
 
-	// Clear the contents of the logfile
-	FILE* p_file_log_overwritten = fopen(g_s_arg_filename_output, "w");
-	if(p_file_log_overwritten)
-	{
-		fclose(p_file_log_overwritten);
-	}
-
+  // Open the socket
 	g_socket_fd = socket(AF_INET, SOCK_STREAM, 0);
 	if(g_socket_fd < 0)
 	{
@@ -173,9 +320,9 @@ int init_server(char *argv[])
 int main(int argc, char *argv[])
 {
 	// Check for valid argument count
-	if(argc != 3)
+	if(argc != 2)
 	{
-		perror("Invalid number of arguments. Must be: <port> <output_filepath>");
+		perror("Invalid number of arguments. Must be: <port>");
 		return 1;
 	}
 
@@ -186,8 +333,11 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
+  // Initialise the connection handler list
 	init(&g_all_connections);
-	if(pthread_mutex_init(&g_log_lock, 0))
+
+  // Init the file-read mutex
+	if(pthread_mutex_init(&g_mutex, 0))
 	{
 		perror("pthread_mutex_init");
 		return 1;
@@ -201,7 +351,7 @@ int main(int argc, char *argv[])
 		// Add the data to the list of connections
 		append(&g_all_connections, p_conn_data); // Note: The list is now responsible for memory deallocation
 
-		// Wait for a connection
+		// Wait for the next connection
 		p_conn_data->m_client_fd = accept(g_socket_fd, (struct sockaddr*)NULL, NULL);
 		if(p_conn_data->m_client_fd < 0)
 		{
@@ -219,7 +369,7 @@ int main(int argc, char *argv[])
 	}
 
 	// Destroy
-	pthread_mutex_destroy(&g_log_lock);
+	pthread_mutex_destroy(&g_mutex);
 	list_destroy(&g_all_connections);
 
 	return 0;
