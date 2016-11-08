@@ -75,7 +75,10 @@ char send_queue[2048];
 void qsend_flush(int fd)
 {
   #ifdef DEBUG
-  printf("qsend_flush::%s\n", send_queue);
+fflush(stdout);
+	//send_queue[(int)(strlen(send_queue) - 1)] = 0;
+  printf("qsend_flush (%d)::%s\n", (int)strlen(send_queue), send_queue);
+fflush(stdout);
   #endif
 	send(fd, send_queue, strlen(send_queue), 0);
   memset(send_queue, 0, 1024);
@@ -93,7 +96,7 @@ void* handle_connection(void* p_context)
 {
 	c_connection_data* p_conn_data = (c_connection_data*)p_context;
 
-	while(1)
+	//while(1)
 	{
     // Send any queued message
     if(strlen(send_queue) > 0)
@@ -102,8 +105,12 @@ void* handle_connection(void* p_context)
     }
 
 		// Wait for message
+#ifdef DEBUG
+		printf("Waiting for request... ");
+#endif
 		memset(p_conn_data->m_received_message, 0, sizeof(p_conn_data->m_received_message));
 		int result = 0;
+fflush(stdout);
 		while((result = recv(p_conn_data->m_client_fd, p_conn_data->m_received_message, sizeof(p_conn_data->m_received_message), 0)) < 0);
 
 		if(result == 0)
@@ -111,8 +118,13 @@ void* handle_connection(void* p_context)
 		#ifdef DEBUG
 			printf("Connection to client lost.\n\n");
 		#endif
-			break; // Exit the while loop
+			//break; // Exit the while loop
+return 0;
 		}
+
+#ifdef DEBUG
+		printf("Received request:\n%s", p_conn_data->m_received_message);
+#endif
 
 		// Message received. Remove any trailing newline
 		int message_len = strlen(p_conn_data->m_received_message);
@@ -167,19 +179,22 @@ void* handle_connection(void* p_context)
 			// Terminate if there were fewer than 3 words copied over
 			char* errmsg = "Invalid number of words\n";
 			send(p_conn_data->m_client_fd, errmsg, strlen(errmsg), 0);
-			continue;
+			//continue;
+return 0;
 		}
 
 		if(strcmp(word1, "GET") != 0)
 		{
 			char* errmsg = "Not a get request\n";
 			send(p_conn_data->m_client_fd, errmsg, strlen(errmsg), 0);
-			continue;
+			///continue;
+return 0;
 		}
 
     char* str_filetype = strrchr(word2, '.');
 		if((strcmp(word3, "HTTP/1.1") != 0) || (word2[0] != '/') || (str_filetype == NULL))
 		{
+#ifdef DEBUG
       if((strcmp(word3, "HTTP/1.1") != 0))
       {
         printf("No http/1.1 : Found \"%s\" instead\n", word3);
@@ -192,8 +207,10 @@ void* handle_connection(void* p_context)
       {
         printf("No filetype found\n");
       }
+#endif
 			qsend(p_conn_data->m_client_fd, "HTTP/1.1 400 Bad Request\n");
-			continue;
+			//continue;
+return 0;
 		}
 
 		// Forbid access to parent folders
@@ -201,7 +218,8 @@ void* handle_connection(void* p_context)
 		{
 			// The user may be trying to access a parent folder
 			qsend(p_conn_data->m_client_fd, "HTTP/1.1 403 Forbidden\n");
-			continue;
+			//continue;
+return 0;
 		}
 
 		// Get the file at the requested URL
@@ -221,19 +239,23 @@ void* handle_connection(void* p_context)
 		if(stat_result == -1)
 		{
 			// File does not exist
+#ifdef DEBUG
       printf("Failed to find %s\n", requested_filepath);
+#endif
 			qsend(p_conn_data->m_client_fd, "HTTP/1.1 404 Not Found\n");
-			continue;
+			//continue;
+return 0;
 		}
 
 		// TODO Lock mutex when accessing file!
-		FILE* p_file_requested = fopen(requested_filepath, "r");
+		FILE* p_file_requested = fopen(requested_filepath, "rb");
 
 		if(p_file_requested == 0)
 		{
 			// File does not exist
 			qsend(p_conn_data->m_client_fd, "HTTP/1.1 404 Not Found\n");
-			continue;
+			//continue;
+return 0;
 		}
 
 		// Send the OK message
@@ -242,6 +264,7 @@ void* handle_connection(void* p_context)
 		// Send headers
 		qsend(p_conn_data->m_client_fd, "Server: Localhost\n");
 		qsend(p_conn_data->m_client_fd, "Strict-Transport-Security: max-age=31536000\n");
+		qsend(p_conn_data->m_client_fd, "Connection: close\n");
 
 		// Get the date of modification
 		char modification_date_str[30];
@@ -263,12 +286,11 @@ void* handle_connection(void* p_context)
 
       qsend_flush(p_conn_data->m_client_fd);
 
-			char* str_contents = (char*)malloc(file_stat.st_size);
 			pthread_mutex_lock(&g_mutex);
-			while(fgets(str_contents, file_stat.st_size, p_file_requested))
 			{
-				send(p_conn_data->m_client_fd, str_contents, file_stat.st_size, 0);
-				memset(str_contents, 0, file_stat.st_size);
+				qsend(p_conn_data->m_client_fd, "About to send image...\n");
+				qsend_flush(p_conn_data->m_client_fd);
+				send(p_conn_data->m_client_fd, p_file_requested, file_stat.st_size, 0);
 			}
       fclose(p_file_requested);
       pthread_mutex_unlock(&g_mutex);
@@ -290,6 +312,7 @@ void* handle_connection(void* p_context)
 				qsend(p_conn_data->m_client_fd, str_contents);
 				memset(str_contents, 0, file_stat.st_size);
 			}
+
       fclose(p_file_requested);
       pthread_mutex_unlock(&g_mutex);
 		}
@@ -298,8 +321,9 @@ void* handle_connection(void* p_context)
 #endif
 	}
 
+	// Send the contents of the queued message, close the connection.
   qsend_flush(p_conn_data->m_client_fd);
-
+	close(p_conn_data->m_client_fd);
 	return 0;
 }
 

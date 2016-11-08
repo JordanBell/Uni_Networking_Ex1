@@ -35,6 +35,3 @@ while read url auth; do
    curl -o test-$testcase --stderr error-$testcase -D header-$testcase --trace-ascii trace-$testcase $auth $url
    let testcase=testcase+1
 done 3> testcases-run < testcases
-echo Done
-
-curl -o test-7 --stderr error-7 -D header-7 --trace-ascii trace-7 files/txt
