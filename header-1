@@ -1,0 +1,8 @@
+HTTP/1.1 200 OK
+Server: Localhost
+Strict-Transport-Security: max-age=31536000
+Last-Modified: 2016-11-01 19:28:13.397868829
+Content-Type: text/html
+Content-Length: 79
+Hey buddy! Here's a plain text file. Do you like it?
+

@@ -1,11 +1,8 @@
 #!/bin/bash
 
 ### CONFIG ###
-PORT=1234
-OUT_FILE=log.txt
+PORT=8808
 ##############
 
-fuser -k $PORT/tcp # Kill the process on the port
-make
-clear
-./serverThreaded $PORT $OUT_FILE
+fuser -k $PORT/tcp
+./serverThreaded $PORT

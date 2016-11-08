@@ -1,0 +1,26 @@
+== Info:   Trying 127.0.0.1...
+== Info: Connected to localhost (127.0.0.1) port 8808 (#0)
+=> Send header, 86 bytes (0x56)
+0000: GET /text.txt HTTP/1.1
+0018: Host: localhost:8808
+002e: User-Agent: curl/7.47.0
+0047: Accept: */*
+0054: 
+<= Recv header, 16 bytes (0x10)
+0000: HTTP/1.1 200 OK.
+<= Recv header, 18 bytes (0x12)
+0000: Server: Localhost.
+<= Recv header, 44 bytes (0x2c)
+0000: Strict-Transport-Security: max-age=31536000.
+<= Recv header, 45 bytes (0x2d)
+0000: Last-Modified: 2016-11-01 19:28:13.397868829.
+<= Recv header, 24 bytes (0x18)
+0000: Content-Type: text/html.
+<= Recv header, 19 bytes (0x13)
+0000: Content-Length: 79.
+<= Recv header, 53 bytes (0x35)
+0000: Hey buddy! Here's a plain text file. Do you like it?.
+<= Recv header, 1 bytes (0x1)
+0000: .
+<= Recv data, 25 bytes (0x19)
+0000: Best of luck,.-This File.
